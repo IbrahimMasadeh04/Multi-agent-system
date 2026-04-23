@@ -1,0 +1,15 @@
+chromadb
+fastapi
+langchain
+langchain-chroma
+langchain-community
+langchain-google-genai
+langchain-openai
+langchain-tavily
+langgraph
+langgraph-cli[inmem]
+pypdf
+python-multipart
+streamlit
+tavily-python
+uvicorn[standard]
