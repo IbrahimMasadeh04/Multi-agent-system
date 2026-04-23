@@ -1,6 +1,6 @@
 from langchain_tavily import TavilySearch
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_community.agent_toolkits.sql.base import create_sql_agent
+# from langchain_community.agent_toolkits.sql.base import create_sql_agent
 
 from src.features.db_analyst.tools import execute_sql_query
 from src.features.agents.state import AgentState
@@ -104,6 +104,9 @@ async def db_analyst_worker(state: AgentState):
         system_prompt = """You are a SQL expert. 
         Available Tables:
         {sql_tables}
+
+        The Schema of each table is as follows:
+        {sql_schemas}
         
         Your task:
         1. Translate the user's question into a valid SQLite query, execute a read-only operations, and if the user asked you to make changes (write operations), tell them that write operations are not allowed ,with apologies.
@@ -112,8 +115,10 @@ async def db_analyst_worker(state: AgentState):
         """
 
         # Get the tables info from the toolkit
-        toolkit_tools = _get_sql_toolkit().get_tools()
+        toolkit = _get_sql_toolkit()
+        toolkit_tools = toolkit.get_tools()
         list_tables_tool = next((tool for tool in toolkit_tools if tool.name == "sql_db_list_tables"), None)
+        schema_tool = next((tool for tool in toolkit_tools if tool.name == "sql_db_schema"), None)
         
         if list_tables_tool:
             # Execute the tool to get the actual list of tables
@@ -121,10 +126,15 @@ async def db_analyst_worker(state: AgentState):
         else:
             tables = "No tables found or tool unavailable."
 
+        if schema_tool and tables:
+            schemas = schema_tool.run(tables)
+        else:
+            schemas = "No schema information available."
+
         print(f"DEBUG: DB Tables: {tables}")
 
         response = await llm_with_tools.ainvoke([
-            SystemMessage(content=system_prompt.format(sql_tables=tables)),
+            SystemMessage(content=system_prompt.format(sql_tables=tables, sql_schemas=schemas)),
             HumanMessage(content=query)
         ])
 
