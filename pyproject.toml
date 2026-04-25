@@ -19,6 +19,7 @@ dependencies = [
     "langchain-tavily>=0.2.18",
     "langgraph>=1.0.0",
     "langgraph-cli[inmem]>=0.4.14",
+    "langsmith[openai-agents]>=0.7.12",
     "pypdf>=6.10.2",
     "python-dotenv>=1.0.1",
     "python-multipart>=0.0.26",
@@ -38,8 +39,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["langgraph.templates.agent", "agent"]
 [tool.setuptools.package-dir]
-"langgraph.templates.agent" = "src/agent"
-"agent" = "src/agent"
+"langgraph.templates.agent" = "src/features/agents"
+"agent" = "src/features/agents"
 
 
 [tool.setuptools.package-data]

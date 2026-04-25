@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     LANGCHAIN_TRACING_V2: str
     PROJECT_NAME: str
     VENOM_DB_PATH: str
+    LANGSMITH_ENDPOINT: str
+    LANGSMITH_TRACING: str
 
 
     class Config:

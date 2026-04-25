@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from src.features.ingestion.service import process_and_save
-from src.features.agents.graph import create_graph
+from src.features.agents.graph import graph
 import shutil
 import os
 from src.helper.config import get_settings
@@ -10,7 +10,6 @@ settings = get_settings()
 
 
 router = APIRouter()
-graph = create_graph()
 
 
 def _message_text(message):
@@ -20,6 +19,11 @@ def _message_text(message):
 
 class ChatRequest(BaseModel):
     message: str
+
+
+#######################
+#      UPLOAD EP      #
+#######################
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -36,11 +40,16 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+####################
+#      CHAT EP     #
+####################
 @router.post("/chat")
 async def chat(request: ChatRequest):
     try:
+        config = { "configurable": { "thread_id": "user_session_123" } }
         inputs = { "messages": [HumanMessage(content=request.message)] }
-        final_state = await graph.ainvoke(inputs)
+        final_state = await graph.ainvoke(inputs, config=config)
 
         response = _message_text(final_state["messages"][-1])
         return { "response": response }
