@@ -4,7 +4,20 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from src.helper.config import get_settings
 settings = get_settings()
 
-db = SQLDatabase.from_uri(f"sqlite:///{settings.VENOM_DB_PATH}")
+_db_instance = None
+
+def _get_db():
+    """Lazily initialize and return the SQLDatabase instance."""
+    global _db_instance
+    if _db_instance is None:
+        try:
+            _db_instance = SQLDatabase.from_uri(f"sqlite:///{settings.VENOM_DB_PATH}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to connect to database at {settings.VENOM_DB_PATH}. "
+                f"Please ensure the path exists and is accessible. Error: {e}"
+            )
+    return _db_instance
 
 def _message_text(message):
     if hasattr(message, "content"):

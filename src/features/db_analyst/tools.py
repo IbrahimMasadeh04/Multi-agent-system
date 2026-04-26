@@ -17,10 +17,20 @@ def execute_sql_query(query: str):
     """
 
     try:
+        query_upper = query.strip().upper()
+        is_write = any(kw in query_upper for kw in ["UPDATE", "INSERT", "DELETE", "DROP", "ALTER"])
+        
         with engine.connect() as connection:
             result = connection.execute(text(query))
+            
+            # For write operations, commit and return row count
+            if is_write:
+                connection.commit()
+                rows_affected = result.rowcount
+                return f"Query executed successfully. Rows affected: {rows_affected}"
+            
+            # For read operations, fetch and return rows
             rows = result.fetchall()
-
             if not rows:
                 return "No Results Found."
             return str([dict(row._mapping) for row in rows])

@@ -10,3 +10,6 @@ class AgentState(TypedDict):
     plan: list[str] | None = None
     past_steps: list[str] | None = None
     current_task: str | None = None
+    pending_sql: str | None = None
+    requires_confirmation: bool = False
+    user_approval: bool | None = None

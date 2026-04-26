@@ -32,9 +32,39 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "pending_approval" not in st.session_state:
+    st.session_state.pending_approval = False
+    
+if "pending_sql" not in st.session_state:
+    st.session_state.pending_sql = ""
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+
+if st.session_state.pending_approval:
+    with st.chat_message("assistant"):
+        st.warning("⚠️ **Human Confirmation Required**!")
+        st.code(st.session_state.pending_sql, language="sql")
+        st.markdown("I have a database write operation ready. Please approve or reject below.")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Approve"):
+                res = requests.post(f"{API_URL}/approve", json={"approved": True})
+                if res.status_code == 200:
+                    ans = res.json().get("response")
+                    st.session_state.messages.append({"role": "assistant", "content": ans})
+                st.session_state.pending_approval = False
+                st.rerun()
+        with col2:
+            if st.button("❌ Reject"):
+                res = requests.post(f"{API_URL}/approve", json={"approved": False})
+                if res.status_code == 200:
+                    ans = res.json().get("response")
+                    st.session_state.messages.append({"role": "assistant", "content": ans})
+                st.session_state.pending_approval = False
+                st.rerun()
+    st.stop()
 
 if prompt := st.chat_input("Ask me something (about your files or the world)..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -42,7 +72,7 @@ if prompt := st.chat_input("Ask me something (about your files or the world)..."
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Orchestrating agents..."):
+        with st.spinner("Orchestrating bots..."):
             try:
                 response = requests.post(
                     f"{API_URL}/chat", 
@@ -50,9 +80,15 @@ if prompt := st.chat_input("Ask me something (about your files or the world)..."
                 )
                 
                 if response.status_code == 200:
-                    answer = response.json().get("response")
-                    st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    data = response.json()
+                    if data.get("status") == "interrupted":
+                        st.session_state.pending_approval = True
+                        st.session_state.pending_sql = data.get("pending_sql", "")
+                        st.rerun()
+                    else:
+                        answer = data.get("response")
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
                 else:
                     error_msg = f"Error: {response.status_code}"
                     st.error(error_msg)

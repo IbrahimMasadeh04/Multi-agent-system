@@ -8,6 +8,7 @@ from src.features.agents.nodes import (
     planner_node,
     synthesizer, 
     db_analyst_worker, 
+    sql_executor_node,
     intent_analyzer
 )
 from src.features.agents.state import AgentState
@@ -23,6 +24,7 @@ def create_graph():
     workflow.add_node("internal_search", internal_worker)
     workflow.add_node("external_search", external_worker)
     workflow.add_node("db_analyst", db_analyst_worker)
+    workflow.add_node("sql_executor_node", sql_executor_node)
     workflow.add_node("synthesizer", synthesizer)
 
     workflow.set_entry_point("intent_analyzer")
@@ -43,6 +45,14 @@ def create_graph():
         else:
             print("  Score < 0.6 -> Routing to: external_search")
             return "external_search"
+
+    def route_db_analyst(state: AgentState):
+        print("\n" + "="*20 + " [ROUTER: DB_ANALYST] " + "="*20)
+        if state.get("requires_confirmation") and state.get("pending_sql"):
+            print("  Routing to: sql_executor_node")
+            return "sql_executor_node"
+        print("  Routing to: orchestrator")
+        return "orchestrator"
 
     workflow.add_edge("intent_analyzer", "orchestrator")
 
@@ -69,14 +79,20 @@ def create_graph():
         }
     )
 
-    workflow.add_edge("db_analyst", "orchestrator")
+    workflow.add_conditional_edges(
+        "db_analyst",
+        route_db_analyst,
+        {
+            "sql_executor_node": "sql_executor_node",
+            "orchestrator": "orchestrator"
+        }
+    )
+    workflow.add_edge("sql_executor_node", "orchestrator")
+    
     workflow.add_edge("external_search", "orchestrator")
     workflow.add_edge("synthesizer", END)
 
-    # use this when working locally
-    # return workflow.compile(checkpointer=mem)
-    
-    # use this when using `langgraph dev` 
-    return workflow.compile()
+    # Compile with memory and interrupt
+    return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
 
 graph = create_graph()

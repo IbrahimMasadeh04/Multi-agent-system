@@ -7,7 +7,7 @@ from src.features.db_analyst.tools import execute_sql_query
 from src.features.agents.state import AgentState
 from src.features.ingestion.service import search_internal_docs_with_score
 from src.helper.config import get_settings
-from src.helper.shared import _message_text, _get_llm, db
+from src.helper.shared import _message_text, _get_llm, _get_db
 
 
 def _get_last_human_query(state: AgentState) -> str:
@@ -266,15 +266,15 @@ async def db_analyst_worker(state: AgentState):
         The Schema of each table is as follows:
         {sql_schemas}
         
-        Your task:
-        1. Contextualize the user's latest query by looking at the conversation history. If they say "both" or "them", refer to prior entities discussed.
-        2. Translate the user's question into a valid SQLite query, execute read-only operations, and if the user asked you to make changes (write operations), tell them that write operations are not allowed with apologies.
-        3. Call 'execute_sql_query' with that query.
-        4. Summarize the final result for the user.
+        CRITICAL INSTRUCTIONS:
+        1. For ALL queries (read or write), you MUST translate them into SQL and call the execute_sql_query tool.
+        2. Do NOT generate explanatory text about how to run SQL - ALWAYS call the tool directly.
+        3. After the tool executes, summarize the result for the user.
+        4. For write operations (INSERT, UPDATE, DELETE), the system will automatically pause for human approval before execution.
         """
 
         # Get the tables info from SQLAlchemy inspector
-        inspector = inspect(db._engine)
+        inspector = inspect(_get_db()._engine)
         table_names = inspector.get_table_names()
         tables = ", ".join(table_names) if table_names else "No tables found."
 
@@ -303,19 +303,96 @@ async def db_analyst_worker(state: AgentState):
         if response.tool_calls:
             for tool_call in response.tool_calls:
                 if tool_call['name'] == 'execute_sql_query':
-                    print(f"  Generated SQL Query: {tool_call['args']}")
-                    tool_result = execute_sql_query.invoke(tool_call['args'])
+                    query = tool_call['args'].get('query', '')
+                    print(f"  Generated SQL Query: {query}")
                     
-                    # Summarize the result instead of just returning raw string
-                    summary_prompt = "Summarize the following SQL results for the user: {results}"
-                    summary_res = await _get_llm().ainvoke([
-                        SystemMessage(content="You are a helpful assistant."),
-                        HumanMessage(content=summary_prompt.format(results=tool_result))
-                    ])
-                    return {
-                        "messages": [AIMessage(content=summary_res.content)]
-                    }
+                    is_write = any(kw in query.upper() for kw in ["UPDATE", "INSERT", "DELETE", "DROP", "ALTER"])
+                    intent_data = state.get("intent_data") or {}
+                    primary_intent = intent_data.get("primary_intent", "")
 
+                    if is_write or primary_intent == "UPDATE_DATA":
+                        print(f"  Graph Interrupted. Awaiting Approval for Query: {query}")
+                        # Return pending SQL to pause before sql_executor_node
+                        return {
+                            "pending_sql": query,
+                            "requires_confirmation": True,
+                            "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{query}\n```")]
+                        }
+                    else:
+                        tool_result = execute_sql_query.invoke(tool_call['args'])
+                        
+                        # Summarize the result instead of just returning raw string
+                        summary_prompt = "Summarize the following SQL results for the user: {results}"
+                        summary_res = await _get_llm().ainvoke([
+                            SystemMessage(content="You are a helpful assistant."),
+                            HumanMessage(content=summary_prompt.format(results=tool_result))
+                        ])
+                        return {
+                            "messages": [AIMessage(content=summary_res.content)]
+                        }
+        else:
+            # If LLM didn't call tool, check if it's a write operation that should trigger HITL
+            user_query_lower = query.lower()
+            write_keywords = ["add ", "update ", "insert ", "delete ", "remove ", "modify ", "change ", "set "]
+            is_write_intent = any(kw in user_query_lower for kw in write_keywords)
+            
+            if is_write_intent:
+                # Try to extract item name and generate SQL for common operations
+                print(f"  Detected write intent but tool not called. Generating SQL manually.")
+                
+                # Try to parse "add <quantity> <item>" patterns
+                if "add " in user_query_lower:
+                    parts = query.lower().split("add")
+                    if len(parts) > 1:
+                        remainder = parts[1].strip()
+                        # Try to parse quantity and item name
+                        tokens = remainder.split()
+                        if tokens:
+                            try:
+                                qty = int(tokens[0])
+                                # Extract item name, stopping at common keywords/punctuation
+                                item_tokens = []
+                                stop_words = ["in", "the", "inventory", "from", "to", "at", "(", "for", "by"]
+                                for token in tokens[1:]:
+                                    # Remove trailing punctuation for comparison
+                                    clean_token = token.rstrip('(),;')
+                                    if clean_token.lower() in stop_words:
+                                        break
+                                    item_tokens.append(token.rstrip('(),;'))
+                                
+                                item = " ".join(item_tokens) if item_tokens else tokens[1].rstrip('(),;')
+                                
+                                # Ensure item is not empty
+                                if not item or item.isdigit():
+                                    item = tokens[1] if len(tokens) > 1 else "unknown"
+                                
+                                sql_query = f"UPDATE inventory SET quantity_available = quantity_available + {qty} WHERE LOWER(item_name) = LOWER('{item}');"
+                                print(f"  Generated SQL: {sql_query}")
+                                return {
+                                    "pending_sql": sql_query,
+                                    "requires_confirmation": True,
+                                    "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{sql_query}\n```")]
+                                }
+                            except (ValueError, IndexError) as e:
+                                print(f"  Failed to parse add pattern: {e}")
+                                # Still trigger HITL even if parsing fails - use a generic update
+                                sql_query = f"-- Unable to parse exact operation. Please review:\n-- Original: {query}"
+                                return {
+                                    "pending_sql": sql_query,
+                                    "requires_confirmation": True,
+                                    "messages": [AIMessage(content=f"[SYSTEM] Write operation detected but could not be parsed. Please provide more details about what you want to update.")]
+                                }
+                
+                # If we detected write intent but couldn't parse it, don't return LLM's explanation
+                # Instead, trigger HITL with a generic message
+                print(f"  Detected write intent but couldn't parse. Triggering HITL.")
+                return {
+                    "pending_sql": f"-- Operation: {query}",
+                    "requires_confirmation": True,
+                    "messages": [AIMessage(content=f"[SYSTEM] Write operation detected. Please clarify your request with the format: 'add <quantity> <item_name>'")]
+                }
+
+        # Only return explanatory text if it's NOT a write operation
         if not response.content or response.content.strip() == "":
             print("  DB Analyst failed to answer the request.")
             return {
@@ -332,6 +409,49 @@ async def db_analyst_worker(state: AgentState):
             "messages": [AIMessage(content=f"DB Analyst Results: (Error) {exc}")]
         }
 
+##########################
+#      SQL EXECUTOR      #
+##########################
+async def sql_executor_node(state: AgentState):
+    """
+    Executes pending SQL queries after user approval. (Phase B)
+    """
+    print("\n" + "="*20 + " [SQL_EXECUTOR] " + "="*20)
+    
+    pending_sql = state.get("pending_sql")
+    user_approval = state.get("user_approval")
+    
+    if not pending_sql:
+        print("  Error: No pending SQL query to execute.")
+        return {"messages": [AIMessage(content="I don't have any pending database updates to execute.")], "requires_confirmation": False, "user_approval": None}
+        
+    if user_approval is True:
+        print(f"  Graph Resumed. Executing Query: {pending_sql}")
+        try:
+            tool_result = execute_sql_query.invoke({"query": pending_sql})
+            
+            # Reset states and summarize
+            return {
+                "messages": [AIMessage(content=f"Successfully executed the targeted database modification! System returned: {tool_result}")],
+                "pending_sql": None,
+                "requires_confirmation": False,
+                "user_approval": None
+            }
+        except Exception as exc:
+            return {
+                "messages": [AIMessage(content=f"Execution Failed: {exc}")],
+                "pending_sql": None,
+                "requires_confirmation": False,
+                "user_approval": None
+            }
+    else:
+        print("  User rejected the SQL query. Cancelling execution.")
+        return {
+            "messages": [AIMessage(content="The database operation was cancelled.")],
+            "pending_sql": None,
+            "requires_confirmation": False,
+            "user_approval": None
+        }
 
 ##########################
 #      SYNTHESIZER       #
