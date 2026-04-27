@@ -14,6 +14,9 @@ from src.features.agents.nodes import (
 from src.features.agents.state import AgentState
 
 mem = InMemorySaver()  # For checkpointing and debugging
+# Add to allowed_msgpack_modules to allow deserialization of custom types
+if hasattr(mem, 'serde') and hasattr(mem.serde, 'allowed_msgpack_modules'):
+    mem.serde.allowed_msgpack_modules.append('src.features.agents.schemas')
 
 def create_graph():
     workflow = StateGraph(AgentState)
@@ -39,11 +42,11 @@ def create_graph():
         print("\n" + "="*20 + " [ROUTER: INTERNAL_SEARCH] " + "="*20)
         score = state.get("search_score", 0.0)
         print(f"  Evaluating search score: {score}")
-        if score >= 0.6:
-            print("  Score >= 0.6 -> Routing to: orchestrator")
+        if score >= 0.5:
+            print("  Score >= 0.5 -> Routing to: orchestrator")
             return "orchestrator"
         else:
-            print("  Score < 0.6 -> Routing to: external_search")
+            print("  Score < 0.5 -> Routing to: external_search")
             return "external_search"
 
     def route_db_analyst(state: AgentState):
@@ -93,6 +96,7 @@ def create_graph():
     workflow.add_edge("synthesizer", END)
 
     # Compile with memory and interrupt
-    return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
+    # return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
+    return workflow.compile(interrupt_before=["sql_executor_node"])
 
 graph = create_graph()

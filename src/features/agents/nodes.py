@@ -2,7 +2,14 @@ from langchain_tavily import TavilySearch
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from sqlalchemy import inspect
 
-from src.features.agents.schemas import ComplexityDecision, IntentSchema, PlannerOutput
+from src.features.agents.system_prompts import (
+    DB_ANALYST_PROMPT, 
+    INTENT_ANALYZER_PROMPT, 
+    PLANNER_PROMPT, 
+    SYNTHESIZER_PROMPT,
+    ORCHESTRATOR_PROMPT
+)
+from src.features.agents.schemas import ComplexityDecision, IntentSchema, PlannerOutput, RouterDecision
 from src.features.db_analyst.tools import execute_sql_query
 from src.features.agents.state import AgentState
 from src.features.ingestion.service import search_internal_docs_with_score
@@ -38,22 +45,7 @@ async def intent_analyzer(state: AgentState):
     # Use the messages from the checkpointer (state) to build the history
     history_str = "\n".join([f"{'User: ' if isinstance(m, HumanMessage) else 'AI: '}{_message_text(m)}" for m in state.get("messages", [])[:-1]])
 
-    system_prompt = """You are an expert intent analyzer and entity extractor.
-    Your task is to analyze the user's LATEST query and extract structured intent, entities, domain, and confidence.
-    
-    IMPORTANT: Use the Conversation History ONLY as a reference to resolve pronouns or contextual references (e.g., "it", "them", "both") in the Latest Query. Do NOT evaluate the intent of past queries, only the Latest Query.
-    
-    Conversation History:
-    {history}
-
-    Few-shot examples:
-    User: "Hi there!" -> primary_intent: GREETING, domain: WEB, confidence: 1.0, requires_confirmation: False, entities: []
-    User: "How many laptops do we have in inventory?" -> primary_intent: QUERY_DATA, domain: DB, confidence: 0.95, requires_confirmation: False, entities: [{{"item_name": "laptop"}}]
-    User: "What are the cost price for them?" (where history discusses laptops) -> primary_intent: QUERY_DATA, domain: DB, confidence: 0.95, requires_confirmation: False, entities: [{{"item_name": "laptop", "attribute": "cost price"}}]
-    User: "Update its price to $500" (where 'its' refers to a monitor in history) -> primary_intent: UPDATE_DATA, domain: DB, confidence: 0.9, requires_confirmation: True, entities: [{{"item_name": "monitor", "price": 500}}]
-    User: "What does the employee handbook say about PTO?" -> primary_intent: QUERY_DATA, domain: PDF_DOCS, confidence: 0.9, requires_confirmation: False, entities: [{{"topic": "PTO"}}]
-    
-    Latest Query: {query}"""
+    system_prompt = INTENT_ANALYZER_PROMPT
 
     messages = [
         SystemMessage(content=system_prompt.format(history=history_str, query=last_message))
@@ -85,13 +77,7 @@ async def planner_node(state: AgentState):
     llm = _get_llm(TEMPERATURE=0.0).with_structured_output(PlannerOutput, method="function_calling")
     last_message = _get_last_human_query(state)
     
-    system_prompt = """You are an AI planner. Break down the user's query into a step-by-step plan.
-    Use the available workers:
-    - db_analyst (database SQL queries)
-    - internal_search (internal PDF docs)
-    - external_search (web search)
-    Return a JSON list of strings (tasks) indicating the exact steps to accomplish the user's request.
-    Example Format: ["Search prices in DB", "Search market prices on Web", "Compare results"]"""
+    system_prompt = PLANNER_PROMPT
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=last_message)]
     
@@ -110,79 +96,55 @@ async def planner_node(state: AgentState):
 ##########################
 async def orchestrator(state: AgentState):
     """
-    Orchestrator acts as a Router based on the structured JSON provided by intent_analyzer or current plan.
+    Orchestrator acts as a Router based on LLM decision-making.
     """
     print("\n" + "="*20 + " [ORCHESTRATOR] " + "="*20)
     
-    intent_data = state.get("intent_data")
-    if not intent_data:
-        print("  Final Decision: synthesizer (Fallback due to missing intent_data)")
-        return {"next_node": "synthesizer"}
-        
-    primary_intent = intent_data.get("primary_intent")
-    domain = intent_data.get("domain")
-    
+    intent_data = state.get("intent_data", {})
     plan = state.get("plan") or []
-    past_steps = state.get("past_steps")
+    past_steps = state.get("past_steps") or []
     
-    # 1. If state['plan'] is NOT empty
-    if len(plan) > 0:
-        current_task = plan[0]
-        remaining_plan = plan[1:]
-        safe_past_steps = past_steps or []
-        
-        print(f"  Printing current plan: {plan}")
-        print(f"  Executing step {len(safe_past_steps) + 1} of {len(safe_past_steps) + len(plan)}: {current_task}")
-        
-        task_lower = current_task.lower()
-        if "db" in task_lower or "database" in task_lower or "sql" in task_lower:
-            next_node = "db_analyst"
-        elif "internal" in task_lower or "pdf" in task_lower or "web" in task_lower or "external" in task_lower or "market" in task_lower or "search" in task_lower:
-            next_node = "internal_search"
-        else:
-            next_node = "db_analyst" if domain == "DB" else "internal_search"
-            
-        print(f"  Routing mapped task to: {next_node}")
-        
-        updated_past_steps = safe_past_steps + [current_task]
-        return {"plan": remaining_plan, "current_task": current_task, "past_steps": updated_past_steps, "next_node": next_node}
-    
-    # 2. Planning logic
     last_message = _get_last_human_query(state)
 
+    llm = _get_llm(TEMPERATURE=0.0).with_structured_output(RouterDecision, method="function_calling")
+
+    system_prompt = ORCHESTRATOR_PROMPT.format(
+        intent_data=intent_data,
+        plan=plan,
+        past_steps=past_steps,
+        query=last_message
+    )
+
     try:
-        complexity_llm = _get_llm(TEMPERATURE=0.0).with_structured_output(ComplexityDecision, method="function_calling")
-        complexity_res = await complexity_llm.ainvoke([
-            SystemMessage(content="Determine if the user query is complex (requires a multi-step plan, comparisons, or gathering data from multiple sources)."),
-            HumanMessage(content=last_message)
-        ])
-        is_complex = complexity_res.is_complex
-        print(f"  LLM evaluated query complexity: {is_complex}")
+        res = await llm.ainvoke([SystemMessage(content=system_prompt)])
+        print(f"  AI Router Decision: {res.next_node} | Reasoning: {res.reasoning}")
     except Exception as exc:
-        print(f"  LLM complexity check failed: {exc}")
-        is_complex = len(intent_data.get("entities", [])) > 1
+        print(f"  Router LLM Error: {exc}. Falling back to synthesizer.")
+        return {"next_node": "synthesizer"}
 
-    if past_steps is None:
-        if is_complex:
-            print("  Complex intent detected. Routing to: planner")
-            return {"next_node": "planner"}
-        else:
-            if primary_intent == "GREETING":
-                next_node = "synthesizer"
-            elif domain == "DB":
-                next_node = "db_analyst"
-            elif domain in ["PDF_DOCS", "WEB"] or primary_intent in ["QUERY_DATA", "UPDATE_DATA"]:
-                # Always hit internal search first for any search request
-                next_node = "internal_search" if domain != "DB" else "db_analyst"
-            else:
-                next_node = "synthesizer"
-                
-            print(f"  Simple intent detected. Routing directly to: {next_node}")
-            return {"next_node": next_node, "past_steps": ["direct_execution"]}
+    next_node = res.next_node
+    
+    # State update logic
+    state_updates = {"next_node": next_node}
+    
+    if len(plan) > 0 and next_node not in ["planner", "synthesizer"]:
+        current_task = plan[0]
+        updated_plan = plan[1:]
+        updated_past_steps = past_steps + [current_task]
+        
+        print(f"  Consuming plan task: '{current_task}'")
+        state_updates.update({
+            "plan": updated_plan,
+            "current_task": current_task,
+            "past_steps": updated_past_steps
+        })
+    elif next_node not in ["planner", "synthesizer"] and len(past_steps) == 0:
+        # direct execution
+        state_updates.update({
+            "past_steps": ["direct_execution"]
+        })
 
-    # 3. If state['plan'] IS empty AND no more tasks
-    print("  Plan is empty and tasks are completed. Final Decision: synthesizer")
-    return {"next_node": "synthesizer"}
+    return state_updates
 
 
 #############################
@@ -259,19 +221,7 @@ async def db_analyst_worker(state: AgentState):
         tools = [execute_sql_query]
         llm_with_tools = _get_llm(TEMPERATURE=0.0).bind_tools(tools)
 
-        system_prompt = """You are a SQL expert and database analyst. 
-        Available Tables:
-        {sql_tables}
-
-        The Schema of each table is as follows:
-        {sql_schemas}
-        
-        CRITICAL INSTRUCTIONS:
-        1. For ALL queries (read or write), you MUST translate them into SQL and call the execute_sql_query tool.
-        2. Do NOT generate explanatory text about how to run SQL - ALWAYS call the tool directly.
-        3. After the tool executes, summarize the result for the user.
-        4. For write operations (INSERT, UPDATE, DELETE), the system will automatically pause for human approval before execution.
-        """
+        system_prompt = DB_ANALYST_PROMPT
 
         # Get the tables info from SQLAlchemy inspector
         inspector = inspect(_get_db()._engine)
@@ -303,20 +253,20 @@ async def db_analyst_worker(state: AgentState):
         if response.tool_calls:
             for tool_call in response.tool_calls:
                 if tool_call['name'] == 'execute_sql_query':
-                    query = tool_call['args'].get('query', '')
-                    print(f"  Generated SQL Query: {query}")
+                    sql_query = tool_call['args'].get('query', '')
+                    print(f"  Generated SQL Query: {sql_query}")
                     
-                    is_write = any(kw in query.upper() for kw in ["UPDATE", "INSERT", "DELETE", "DROP", "ALTER"])
+                    is_write = any(kw in sql_query.upper() for kw in ["UPDATE", "INSERT", "DELETE", "DROP", "ALTER"])
                     intent_data = state.get("intent_data") or {}
                     primary_intent = intent_data.get("primary_intent", "")
 
-                    if is_write or primary_intent == "UPDATE_DATA":
-                        print(f"  Graph Interrupted. Awaiting Approval for Query: {query}")
+                    if is_write or primary_intent == "UPDATE_DATA" or intent_data.get("requires_confirmation"):
+                        print(f"  Graph Interrupted. Awaiting Approval for Query: {sql_query}")
                         # Return pending SQL to pause before sql_executor_node
                         return {
-                            "pending_sql": query,
+                            "pending_sql": sql_query,
                             "requires_confirmation": True,
-                            "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{query}\n```")]
+                            "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{sql_query}\n```")]
                         }
                     else:
                         tool_result = execute_sql_query.invoke(tool_call['args'])
@@ -331,65 +281,34 @@ async def db_analyst_worker(state: AgentState):
                             "messages": [AIMessage(content=summary_res.content)]
                         }
         else:
-            # If LLM didn't call tool, check if it's a write operation that should trigger HITL
-            user_query_lower = query.lower()
-            write_keywords = ["add ", "update ", "insert ", "delete ", "remove ", "modify ", "change ", "set "]
-            is_write_intent = any(kw in user_query_lower for kw in write_keywords)
+            # If LLM didn't call tool, check if intent_data indicates an UPDATE_DATA intent
+            intent_data = state.get("intent_data") or {}
             
-            if is_write_intent:
-                # Try to extract item name and generate SQL for common operations
-                print(f"  Detected write intent but tool not called. Generating SQL manually.")
+            if intent_data.get("primary_intent") == "UPDATE_DATA" or intent_data.get("requires_confirmation"):
+                print(f"  Detected write intent from intent_data but tool not called. Reprompting LLM.")
                 
-                # Try to parse "add <quantity> <item>" patterns
-                if "add " in user_query_lower:
-                    parts = query.lower().split("add")
-                    if len(parts) > 1:
-                        remainder = parts[1].strip()
-                        # Try to parse quantity and item name
-                        tokens = remainder.split()
-                        if tokens:
-                            try:
-                                qty = int(tokens[0])
-                                # Extract item name, stopping at common keywords/punctuation
-                                item_tokens = []
-                                stop_words = ["in", "the", "inventory", "from", "to", "at", "(", "for", "by"]
-                                for token in tokens[1:]:
-                                    # Remove trailing punctuation for comparison
-                                    clean_token = token.rstrip('(),;')
-                                    if clean_token.lower() in stop_words:
-                                        break
-                                    item_tokens.append(token.rstrip('(),;'))
-                                
-                                item = " ".join(item_tokens) if item_tokens else tokens[1].rstrip('(),;')
-                                
-                                # Ensure item is not empty
-                                if not item or item.isdigit():
-                                    item = tokens[1] if len(tokens) > 1 else "unknown"
-                                
-                                sql_query = f"UPDATE inventory SET quantity_available = quantity_available + {qty} WHERE LOWER(item_name) = LOWER('{item}');"
-                                print(f"  Generated SQL: {sql_query}")
-                                return {
-                                    "pending_sql": sql_query,
-                                    "requires_confirmation": True,
-                                    "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{sql_query}\n```")]
-                                }
-                            except (ValueError, IndexError) as e:
-                                print(f"  Failed to parse add pattern: {e}")
-                                # Still trigger HITL even if parsing fails - use a generic update
-                                sql_query = f"-- Unable to parse exact operation. Please review:\n-- Original: {query}"
-                                return {
-                                    "pending_sql": sql_query,
-                                    "requires_confirmation": True,
-                                    "messages": [AIMessage(content=f"[SYSTEM] Write operation detected but could not be parsed. Please provide more details about what you want to update.")]
-                                }
+                # Force fallback to generate SQL for write operation
+                fallback_llm = _get_llm(TEMPERATURE=0.0).bind_tools(tools, tool_choice="execute_sql_query")
+                fallback_msg = HumanMessage(content="You must use the execute_sql_query tool to generate the precise SQL for this update/insert/delete operation based on the schema.")
                 
-                # If we detected write intent but couldn't parse it, don't return LLM's explanation
-                # Instead, trigger HITL with a generic message
-                print(f"  Detected write intent but couldn't parse. Triggering HITL.")
+                fallback_res = await fallback_llm.ainvoke(conversation_context + [response, fallback_msg])
+                
+                if fallback_res.tool_calls:
+                    for tool_call in fallback_res.tool_calls:
+                        if tool_call['name'] == 'execute_sql_query':
+                            sql_query = tool_call['args'].get('query', '')
+                            print(f"  Generated SQL Query (Fallback): {sql_query}")
+                            return {
+                                "pending_sql": sql_query,
+                                "requires_confirmation": True,
+                                "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{sql_query}\n```")]
+                            }
+                
+                # If still failing to generate SQL
                 return {
                     "pending_sql": f"-- Operation: {query}",
                     "requires_confirmation": True,
-                    "messages": [AIMessage(content=f"[SYSTEM] Write operation detected. Please clarify your request with the format: 'add <quantity> <item_name>'")]
+                    "messages": [AIMessage(content="[SYSTEM] Write operation detected but could not generate precise SQL. Please provide more details.")]
                 }
 
         # Only return explanatory text if it's NOT a write operation
@@ -476,12 +395,7 @@ async def synthesizer(state: AgentState):
     
     print(f"  Context length to synthesize: {len(context)} characters")
     
-    system_prompt = (
-        "You are a response synthesizer and helpful AI assistant. "
-        "You must answer the user's latest query naturally. "
-        "If context information is provided from subagents, use it to answer the query accurately. "
-        "If you are greeting or answering casual questions, just respond normally using the conversation history."
-    )
+    system_prompt = SYNTHESIZER_PROMPT
     
     history = []
     last_human_idx = -1
