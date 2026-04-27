@@ -25,4 +25,12 @@ class PlannerOutput(BaseModel):
 class ComplexityDecision(BaseModel):
         is_complex: bool = Field(description="True if the query requires multiple steps, comparing multiple items, or complex reasoning. False for simple single-step queries.")
 
+from typing import Literal
+
+class RouterDecision(BaseModel):
+    next_node: Literal['planner', 'db_analyst', 'internal_search', 'external_search', 'synthesizer'] = Field(
+        description="The next node to execute based on the current context."
+    )
+    reasoning: str = Field(description="A brief explanation of why this node was chosen.")
+
 
