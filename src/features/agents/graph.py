@@ -96,7 +96,7 @@ def create_graph():
     workflow.add_edge("synthesizer", END)
 
     # Compile with memory and interrupt
-    # return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
-    return workflow.compile(interrupt_before=["sql_executor_node"])
+    return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
+    # return workflow.compile(interrupt_before=["sql_executor_node"])
 
 graph = create_graph()

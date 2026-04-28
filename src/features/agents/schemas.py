@@ -16,6 +16,7 @@ class IntentSchema(BaseModel):
     domain: str = Field(description="The likely domain (DB, PDF_DOCS, WEB).")
     confidence: float = Field(description="Confidence level of the intent classification (0 to 1).")
     requires_confirmation: bool = Field(description="True if the intent involves changing data (INSERT/UPDATE).")
+    is_complex: bool = Field(default=False, description="True if the query requires multiple distinct steps, actions or retrieving multiple different pieces of information.")
 
 
 class PlannerOutput(BaseModel):

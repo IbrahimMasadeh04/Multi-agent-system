@@ -10,11 +10,12 @@ INTENT_ANALYZER_PROMPT = """You are an expert intent analyzer and entity extract
     {history}
 
     Few-shot examples:
-    User: "Hi there!" -> primary_intent: GREETING, domain: WEB, confidence: 1.0, requires_confirmation: False, entities: []
-    User: "How many laptops do we have in inventory?" -> primary_intent: QUERY_DATA, domain: DB, confidence: 0.95, requires_confirmation: False, entities: [{{"item_name": "laptop"}}]
-    User: "What are the cost price for them?" (where history discusses laptops) -> primary_intent: QUERY_DATA, domain: DB, confidence: 0.95, requires_confirmation: False, entities: [{{"item_name": "laptop", "attribute": "cost price"}}]
-    User: "Update its price to $500" (where 'its' refers to a monitor in history) -> primary_intent: UPDATE_DATA, domain: DB, confidence: 0.9, requires_confirmation: True, entities: [{{"item_name": "monitor", "price": 500}}]
-    User: "What does the employee handbook say about PTO?" -> primary_intent: QUERY_DATA, domain: PDF_DOCS, confidence: 0.9, requires_confirmation: False, entities: [{{"topic": "PTO"}}]
+    User: "Hi there!" -> primary_intent: GREETING, domain: WEB, confidence: 1.0, requires_confirmation: False, is_complex: False, entities: []
+    User: "How many laptops do we have in inventory?" -> primary_intent: QUERY_DATA, domain: DB, confidence: 0.95, requires_confirmation: False, is_complex: False, entities: [{{"item_name": "laptop"}}]
+    User: "What are the cost price for them?" (where history discusses laptops) -> primary_intent: QUERY_DATA, domain: DB, confidence: 0.95, requires_confirmation: False, is_complex: False, entities: [{{"item_name": "laptop", "attribute": "cost price"}}]
+    User: "Update its price to $500" (where 'its' refers to a monitor in history) -> primary_intent: UPDATE_DATA, domain: DB, confidence: 0.9, requires_confirmation: True, is_complex: False, entities: [{{"item_name": "monitor", "price": 500}}]
+    User: "What does the employee handbook say about PTO?" -> primary_intent: QUERY_DATA, domain: PDF_DOCS, confidence: 0.9, requires_confirmation: False, is_complex: False, entities: [{{"topic": "PTO"}}]
+    User: "Add 10 more Rani in the inventory, and tell me how much Mr.Chips i do have" -> primary_intent: UPDATE_DATA, domain: DB, confidence: 0.95, requires_confirmation: True, is_complex: True, entities: [{{"item_name": "Rani", "quantity": 10}}, {{"item_name": "Mr.Chips"}}]
     
     Latest Query: {query}"""
 
@@ -74,7 +75,7 @@ Decision Logic:
 1. If there is an active `plan`, you MUST pick the node best suited for the FRONT task of the plan.
 2. If `plan` is EMPTY and `past_steps` has items, the tasks are done. Pick `synthesizer`.
 3. If `plan` is EMPTY and `past_steps` is EMPTY:
-   - Does the request look complex, requiring multiple sources or steps? -> pick `planner`
+   - Does `intent_data` show `is_complex`: true, or does the request look like it requires multiple sources/actions? -> pick `planner`
    - Does it concern the database (inventory, records, sales, etc.)? -> pick `db_analyst`
    - Does it concern internal policies, guidelines, or PDFs? -> pick `internal_search`
    - Does it concern current events or general knowledge? -> pick `external_search`
