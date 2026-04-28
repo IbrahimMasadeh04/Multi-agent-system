@@ -63,7 +63,11 @@ async def intent_analyzer(state: AgentState):
     print(f"  Entities: {response.entities}")
 
     # Store schema directly as a dict for TypedDict state compatibility
-    return {"intent_data": response.model_dump()}
+    return {
+        "intent_data": response.model_dump(),
+        "plan": [],
+        "past_steps": []
+    }
 
 ##########################
 #        PLANNER         #
@@ -105,6 +109,13 @@ async def orchestrator(state: AgentState):
     past_steps = state.get("past_steps") or []
     
     last_message = _get_last_human_query(state)
+    
+    # Check if the last message in state is from an AI (meaning a worker just finished)
+    # If so, and we have no plan left, we should route to synthesizer
+    if state.get("messages") and isinstance(state["messages"][-1], AIMessage):
+        if not plan:
+            print("  Work complete, routing to synthesizer programmatically.")
+            return {"next_node": "synthesizer"}
 
     llm = _get_llm(TEMPERATURE=0.0).with_structured_output(RouterDecision, method="function_calling")
 
