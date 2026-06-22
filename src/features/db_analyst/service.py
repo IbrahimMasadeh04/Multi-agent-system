@@ -3,8 +3,8 @@
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.tools import tool
 
-from src.helper.shared import _get_llm, _get_db
-from src.helper.config import get_settings
+from src.helper.shared import _get_llm, _get_db  # type: ignore
+from src.helper.config import get_settings  # type: ignore
 settings = get_settings()
 
 

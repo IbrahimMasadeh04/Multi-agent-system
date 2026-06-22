@@ -2,15 +2,15 @@ from langchain_tavily import TavilySearch
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from sqlalchemy import inspect
 
-from src.features.agents.system_prompts import (
-    DB_ANALYST_PROMPT, 
-    INTENT_ANALYZER_PROMPT, 
-    PLANNER_PROMPT, 
-    SYNTHESIZER_PROMPT,
-    ORCHESTRATOR_PROMPT
-)
+from src.features.agents.mcp_client import MCPClient
+# from src.features.agents.system_prompts import (
+#     DB_ANALYST_PROMPT, 
+#     INTENT_ANALYZER_PROMPT, 
+#     PLANNER_PROMPT, 
+#     SYNTHESIZER_PROMPT,
+#     ORCHESTRATOR_PROMPT
+# )
 from src.features.agents.schemas import ComplexityDecision, IntentSchema, PlannerOutput, RouterDecision
-from src.features.db_analyst.tools import execute_sql_query
 from src.features.agents.state import AgentState
 from src.features.ingestion.service import search_internal_docs_with_score
 from src.helper.config import get_settings
@@ -23,6 +23,7 @@ def _get_last_human_query(state: AgentState) -> str:
             return _message_text(m)
     return ""
 
+client = MCPClient("http://127.0.0.1:8080/mcp")
 
 ##########################
 #    INTENT ANALYZER     #
@@ -45,7 +46,7 @@ async def intent_analyzer(state: AgentState):
     # Use the messages from the checkpointer (state) to build the history
     history_str = "\n".join([f"{'User: ' if isinstance(m, HumanMessage) else 'AI: '}{_message_text(m)}" for m in state.get("messages", [])[:-1]])
 
-    system_prompt = INTENT_ANALYZER_PROMPT
+    system_prompt = await client.get_prompt("intent analyzer prompt")
 
     messages = [
         SystemMessage(content=system_prompt.format(history=history_str, query=last_message))
@@ -81,7 +82,7 @@ async def planner_node(state: AgentState):
     llm = _get_llm(TEMPERATURE=0.0).with_structured_output(PlannerOutput, method="function_calling")
     last_message = _get_last_human_query(state)
     
-    system_prompt = PLANNER_PROMPT
+    system_prompt = await client.get_prompt("planner prompt")
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=last_message)]
     
@@ -119,7 +120,9 @@ async def orchestrator(state: AgentState):
 
     llm = _get_llm(TEMPERATURE=0.0).with_structured_output(RouterDecision, method="function_calling")
 
-    system_prompt = ORCHESTRATOR_PROMPT.format(
+    
+    system_prompt: str = await client.get_prompt("orchestrator prompt")
+    system_prompt = system_prompt.format(
         intent_data=intent_data,
         plan=plan,
         past_steps=past_steps,
@@ -229,10 +232,16 @@ async def db_analyst_worker(state: AgentState):
         query = _get_last_human_query(state)
         print(f"  DEBUG: DB Analyst received query: {query}\n")
 
-        tools = [execute_sql_query]
-        llm_with_tools = _get_llm(TEMPERATURE=0.0).bind_tools(tools)
+        # change here to convert everything to call from MCPClient instead
+        #################################################################
+        # tools = [execute_sql_query]                                   #
+        # llm_with_tools = _get_llm(TEMPERATURE=0.0).bind_tools(tools)  #
+        # llm_with_tools = _get_llm(TEMPERATURE=0.0) # temp name        #
+        #################################################################
+        sql_conv_llm = _get_llm(TEMPERATURE=0.0)
 
-        system_prompt = DB_ANALYST_PROMPT
+
+        system_prompt = await client.get_prompt("db analyst prompt")
 
         # Get the tables info from SQLAlchemy inspector
         inspector = inspect(_get_db()._engine)
@@ -257,8 +266,21 @@ async def db_analyst_worker(state: AgentState):
         # Grab up to the last 5 messages from the history to provide to the DB Analyst LLM
         for msg in state.get("messages", [])[-5:]:
             conversation_context.append(msg)
-
-        response = await llm_with_tools.ainvoke(conversation_context)
+        
+        sql_query = await sql_conv_llm.ainvoke(conversation_context) 
+        
+        # Strip markdown formatting if present
+        raw_sql = sql_query.content
+        if raw_sql.startswith("```sql"):
+            raw_sql = raw_sql[6:]
+        elif raw_sql.startswith("```"):
+            raw_sql = raw_sql[3:]
+        if raw_sql.endswith("```"):
+            raw_sql = raw_sql[:-3]
+        raw_sql = raw_sql.strip()
+    
+        response_content = await client.call_tool("execute_sql_query", { "query": raw_sql })
+        response = AIMessage(content=response_content)
 
         # Check if model called a tool
         if response.tool_calls:
@@ -280,7 +302,8 @@ async def db_analyst_worker(state: AgentState):
                             "messages": [AIMessage(content=f"[SYSTEM] Write operation detected and paused for approval:\n\n```sql\n{sql_query}\n```")]
                         }
                     else:
-                        tool_result = execute_sql_query.invoke(tool_call['args'])
+                        
+                        tool_result = await client.call_tool("execute_sql_query", tool_call['args'])
                         
                         # Summarize the result instead of just returning raw string
                         summary_prompt = "Summarize the following SQL results for the user: {results}"
@@ -299,7 +322,8 @@ async def db_analyst_worker(state: AgentState):
                 print(f"  Detected write intent from intent_data but tool not called. Reprompting LLM.")
                 
                 # Force fallback to generate SQL for write operation
-                fallback_llm = _get_llm(TEMPERATURE=0.0).bind_tools(tools, tool_choice="execute_sql_query")
+                fallback_llm = _get_llm(TEMPERATURE=0.0)
+                # fallback_llm = _get_llm(TEMPERATURE=0.0) # temp name
                 fallback_msg = HumanMessage(content="You must use the execute_sql_query tool to generate the precise SQL for this update/insert/delete operation based on the schema.")
                 
                 fallback_res = await fallback_llm.ainvoke(conversation_context + [response, fallback_msg])
@@ -358,7 +382,8 @@ async def sql_executor_node(state: AgentState):
     if user_approval is True:
         print(f"  Graph Resumed. Executing Query: {pending_sql}")
         try:
-            tool_result = execute_sql_query.invoke({"query": pending_sql})
+            client = MCPClient("http://127.0.0.1:8080/mcp")
+            tool_result = await client.call_tool("execute_sql_query", {"query": pending_sql})
             
             # Reset states and summarize
             return {
@@ -368,6 +393,7 @@ async def sql_executor_node(state: AgentState):
                 "user_approval": None
             }
         except Exception as exc:
+            print(f"  SQL Execution Error: {exc}")  
             return {
                 "messages": [AIMessage(content=f"Execution Failed: {exc}")],
                 "pending_sql": None,
@@ -406,7 +432,7 @@ async def synthesizer(state: AgentState):
     
     print(f"  Context length to synthesize: {len(context)} characters")
     
-    system_prompt = SYNTHESIZER_PROMPT
+    system_prompt = await client.get_prompt("synthesizer prompt")
     
     history = []
     last_human_idx = -1

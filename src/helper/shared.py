@@ -1,7 +1,7 @@
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from src.helper.config import get_settings
+from src.helper.config import get_settings  # type: ignore
 settings = get_settings()
 
 _db_instance = None

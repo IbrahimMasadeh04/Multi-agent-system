@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     VENOM_DB_PATH: str
     LANGSMITH_ENDPOINT: str
     LANGSMITH_TRACING: str
+    CLIENT_URI: str
 
 
     class Config:
