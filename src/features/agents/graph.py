@@ -1,7 +1,7 @@
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import InMemorySaver
 
-from src.features.agents.nodes import (
+from src.features.agents.nodes import (  # type: ignore
     external_worker, 
     internal_worker, 
     orchestrator, 
@@ -9,9 +9,10 @@ from src.features.agents.nodes import (
     synthesizer, 
     db_analyst_worker, 
     sql_executor_node,
-    intent_analyzer
-)
-from src.features.agents.state import AgentState
+    intent_analyzer  
+)  
+from src.features.agents.state import AgentState  # type: ignore
+from src.features.agents.file_generator_graph import file_generator_subgraph  # type: ignore
 
 mem = InMemorySaver()  # For checkpointing and debugging
 # Add to allowed_msgpack_modules to allow deserialization of custom types
@@ -29,6 +30,7 @@ def create_graph():
     workflow.add_node("db_analyst", db_analyst_worker)
     workflow.add_node("sql_executor_node", sql_executor_node)
     workflow.add_node("synthesizer", synthesizer)
+    workflow.add_node("file_generator", file_generator_subgraph)
 
     workflow.set_entry_point("intent_analyzer")
 
@@ -67,6 +69,7 @@ def create_graph():
             "internal_search": "internal_search",
             "db_analyst": "db_analyst",
             "external_search": "external_search",
+            "file_generator": "file_generator",
             "synthesizer": "synthesizer"
         }
     )
@@ -93,10 +96,11 @@ def create_graph():
     workflow.add_edge("sql_executor_node", "orchestrator")
     
     workflow.add_edge("external_search", "orchestrator")
+    workflow.add_edge("file_generator", "orchestrator")
     workflow.add_edge("synthesizer", END)
 
     # Compile with memory and interrupt
-    return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
-    # return workflow.compile(interrupt_before=["sql_executor_node"])
+    # return workflow.compile(checkpointer=mem, interrupt_before=["sql_executor_node"])
+    return workflow.compile(interrupt_before=["sql_executor_node"])
 
 graph = create_graph()

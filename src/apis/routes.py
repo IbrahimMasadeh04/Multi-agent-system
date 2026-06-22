@@ -1,11 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from src.features.ingestion.service import process_and_save
-from src.features.agents.graph import graph
+from src.features.ingestion.service import process_and_save  # type: ignore
+from src.features.agents.graph import graph  # type: ignore
 import shutil
 import os
-from src.helper.config import get_settings
+from src.helper.config import get_settings  # type: ignore
 settings = get_settings()
 
 

@@ -13,3 +13,4 @@ class AgentState(TypedDict):
     pending_sql: str | None = None
     requires_confirmation: bool = False
     user_approval: bool | None = None
+    filegen_next: str | None = None

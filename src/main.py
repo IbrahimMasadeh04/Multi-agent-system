@@ -1,6 +1,6 @@
 from fastapi import FastAPI
-from src.apis.routes import router as api_router
-from src.helper.config import get_settings
+from src.apis.routes import router as api_router # type: ignore
+from src.helper.config import get_settings  # type: ignore
 
 settings = get_settings()
 app = FastAPI(title=settings.PROJECT_NAME)

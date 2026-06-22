@@ -20,6 +20,7 @@ dependencies = [
     "langgraph>=1.0.0",
     "langgraph-cli[inmem]>=0.4.14",
     "langsmith[openai-agents]>=0.7.12",
+    "mcp>=1.27.0",
     "pypdf>=6.10.2",
     "python-dotenv>=1.0.1",
     "python-multipart>=0.0.26",
@@ -37,7 +38,7 @@ requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["langgraph.templates.agent", "agent"]
+packages = { find = { where = ["."] } }
 [tool.setuptools.package-dir]
 "langgraph.templates.agent" = "src/features/agents"
 "agent" = "src/features/agents"
@@ -69,6 +70,11 @@ lint.ignore = [
 "tests/*" = ["D", "UP"]
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.uv.workspace]
+members = [
+    "MCP_Server",
+]
 
 [dependency-groups]
 dev = [

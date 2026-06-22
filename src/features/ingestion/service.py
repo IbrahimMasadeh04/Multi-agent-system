@@ -2,8 +2,8 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma.vectorstores import Chroma
 
-from src.helper.config import get_settings
-from src.helper.shared import _get_embeddings
+from src.helper.config import get_settings  # type: ignore
+from src.helper.shared import _get_embeddings  # type: ignore
 
 async def process_and_save(file_path: str):
     settings = get_settings()
